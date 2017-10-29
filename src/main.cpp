@@ -1,26 +1,83 @@
 #include <stdio.h>
 #include <iostream>
+#include <time.h>
+#include <math.h>
 #include <opencv2/opencv.hpp>
 
 using namespace cv;
 
-const String PATH_LEFT = "C:\\Projects\\Stereo\\BlockMatcher\\img\\Aloe\\view1.png";
-const String PATH_RIGHT = "C:\\Projects\\Stereo\\BlockMatcher\\img\\Aloe\\view5.png";
+//Copied and altered from Libelas to convert output into PFM format
+
+int littleendian()
+{
+	int intval = 1;
+	uchar *uval = (uchar *)&intval;
+	return uval[0] == 1;
+}
+
+void WriteFilePFM(float *data, int width, int height, const char* filename, float scalefactor = 1 / 255.0)
+{
+	// Open the file
+	FILE *stream = fopen(filename, "wb");
+	if (stream == 0) {
+		fprintf(stderr, "WriteFilePFM: could not open %s\n", filename);
+		exit(1);
+	}
+
+	// sign of scalefact indicates endianness, see pfms specs
+	if (littleendian())
+		scalefactor = -scalefactor;
+
+	// write the header: 3 lines: Pf, dimensions, scale factor (negative val == little endian)
+	fprintf(stream, "Pf\n%d %d\n%f\n", width, height, scalefactor);
+
+	int n = width;
+	// write rows -- pfm stores rows in inverse order!
+	for (int y = height - 1; y >= 0; y--) {
+		float* ptr = data + y * width;
+		// change invalid pixels (which seem to be represented as -10) to INF
+		for (int x = 0; x < width; x++) {
+			if (ptr[x] < 0)
+				ptr[x] = INFINITY;
+		}
+		if ((int)fwrite(ptr, sizeof(float), n, stream) != n) {
+			fprintf(stderr, "WriteFilePFM: problem writing data\n");
+			exit(1);
+		}
+	}
+
+	// close file
+	fclose(stream);
+}
+
 
 int main(int argc, char** argv)
 {
-
+	//TODO Outdir
 	Mat img_left, img_right;
-	if (argc != 2)
+	String PATH_LEFT = "Q:\\Libraries\\Stereo\\BlockMatcher\\img\\Aloe\\view1.png";
+	String PATH_RIGHT = "Q:\\Libraries\\Stereo\\BlockMatcher\\img\\Aloe\\view5.png";
+	String outdir = "out.pfm";
+	int block_size = 13;
+	uint max_offset = 90;
+
+	if (argc >= 2)
 	{
-		printf("No Image provided, using debugging images...\n");
-		img_left = imread(PATH_LEFT, 1);
-		img_right = imread(PATH_RIGHT, 1);
+		PATH_LEFT = argv[1];
+		PATH_RIGHT = argv[2];
 	}
 	else {
-		img_left = imread(argv[1], 1);
-		img_right = imread(argv[2], 1);
+		printf("No Image provided, using debugging images...\n");
 	}
+	if (argc >= 3) {
+		outdir = argv[3];
+	}
+	if (argc == 5) {
+		block_size = std::stoi(argv[4]);
+		max_offset = std::stoi(argv[5]);
+	}
+	img_left = imread(PATH_LEFT, 1);
+	img_right = imread(PATH_RIGHT, 1);
 
 
 	if (!img_left.data || !img_right.data)
@@ -28,24 +85,14 @@ int main(int argc, char** argv)
 		printf("No image data \n");
 		return -1;
 	}
-    String window_left = "Left";
-	String window_right = "Right";
-	String window_result = "Result";
-	namedWindow(window_left, WINDOW_AUTOSIZE);
-	namedWindow(window_right, WINDOW_AUTOSIZE);
-	namedWindow(window_result, WINDOW_AUTOSIZE);
 	
 
-	int block_size = 11;
-	uint max_offset = 80;
-	Mat result = Mat(img_left.rows, img_left.cols, CV_8S);
-	Mat best_fit = Mat(img_left.rows, img_left.cols, CV_8U);
-	best_fit.setTo(255);
+	
+	Mat result = Mat(img_left.rows, img_left.cols, CV_32F);
+	Mat best_fit = Mat(img_left.rows, img_left.cols, CV_32F);
+	best_fit.setTo(INFINITY);
 	Mat intermediate;
-	cvtColor(img_left, img_left, CV_BGR2GRAY);
-	cvtColor(img_right, img_right, CV_BGR2GRAY);
 
-	std::cout << img_left.type();
 	 
 	for (int ioff = 0; ioff <= max_offset*2; ++ioff)
 	{
@@ -55,32 +102,20 @@ int main(int argc, char** argv)
 		int right_start =	i < 0 ? 0 : i;
 		int right_end =		i < 0 ? img_right.cols + i : img_right.cols;
 		absdiff(img_right(Range(0, img_left.rows), Range(right_start, right_end)), img_left(Range(0, img_left.rows), Range(left_start, left_end)), intermediate);
-
-		imshow(window_left, intermediate);
 		blur(intermediate, intermediate, Size(block_size, block_size));
 
 		for (size_t y = 0; y < img_left.rows; y++)
 		{
 			for (size_t x = 0; x < right_end && x < left_end; x++)
 			{
-				if (intermediate.at<uchar>(y, x) < best_fit.at<uchar>(y, left_start + x)) {
-					best_fit.at<uchar>(y, left_start + x) = intermediate.at<uchar>(y, x);
-					result.at<char>(y, left_start + x) = i;
+				int val = norm(intermediate.at<Vec3b>(y, x));
+				if (val < best_fit.at<float>(y, left_start + x)) {
+					best_fit.at<float>(y, left_start + x) = val;
+					result.at<float>(y, left_start + x) = abs(i);
 				}
 			}
 		}
-
-		imshow(window_right, img_right(Range(0, img_left.rows), Range(right_start, right_end)));
-		imshow(window_result, result);
- 		waitKey(5);
 	}
-	
-	
-	imshow(window_left, img_left);
-	imshow(window_right, img_right);
-	imshow(window_result, result);
-
-	waitKey(0);
-
+	WriteFilePFM((float*)(result.data), result.cols, result.rows, outdir.c_str(), 1.0 / max_offset);
 	return 0;
 }
